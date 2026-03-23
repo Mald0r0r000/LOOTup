@@ -6,8 +6,11 @@ import (
 
 	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/pkg/sftp"
 
 	"github.com/Mald0r0r000/LOOTup/internal/config"
+	"github.com/Mald0r0r000/LOOTup/internal/ssh"
+	"github.com/Mald0r0r000/LOOTup/internal/template"
 	"github.com/Mald0r0r000/LOOTup/internal/transfer"
 )
 
@@ -27,7 +30,9 @@ const (
 // --- Tea Messages ---
 
 type connectResultMsg struct {
-	err error
+	err        error
+	transferer *transfer.Transferer
+	sshClient  *ssh.Client
 }
 
 type transferStartMsg struct{}
@@ -54,14 +59,17 @@ type Model struct {
 	spinner spinner.Model
 	err     error
 
+	// Connections
+	sshClient *ssh.Client
+
 	// Transfer state
-	transferer   *transfer.Transferer
-	fileCount    int
-	totalBytes   int64
-	bytesSent    int64
-	filesDone    int
-	currentFile  string
-	transferErr  error
+	transferer  *transfer.Transferer
+	fileCount   int
+	totalBytes  int64
+	bytesSent   int64
+	filesDone   int
+	currentFile string
+	transferErr error
 
 	// Post-transfer
 	postOutput string
@@ -96,6 +104,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "ctrl+c", "q":
+			m.cleanup()
 			return m, tea.Quit
 		case "enter":
 			return m.handleEnter()
@@ -116,8 +125,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.state = StateError
 			return m, nil
 		}
+		m.transferer = msg.transferer
+		m.sshClient = msg.sshClient
+		m.fileCount = len(m.transferer.Files())
+		m.totalBytes = m.transferer.TotalBytes()
 		m.state = StateTransfer
 		return m, m.startTransfer()
+
+	case transferStartMsg:
+		return m, m.waitForProgress()
 
 	case transferProgressMsg:
 		m.bytesSent = msg.msg.BytesSent
@@ -128,15 +144,26 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.msg.Err != nil {
 			m.transferErr = msg.msg.Err
 		}
-		return m, nil
+		return m, m.waitForProgress()
 
 	case transferDoneMsg:
 		if msg.err != nil {
 			m.err = msg.err
 			m.state = StateError
+			m.cleanup()
 			return m, nil
 		}
 		m.state = StateDone
+		m.cleanup()
+		return m, nil
+
+	case postTransferMsg:
+		m.postOutput = msg.output
+		if msg.err != nil {
+			m.postOutput = fmt.Sprintf("⚠ %v", msg.err)
+		}
+		m.state = StateDone
+		m.cleanup()
 		return m, nil
 	}
 
@@ -257,16 +284,72 @@ func (m Model) handleEnter() (tea.Model, tea.Cmd) {
 
 func (m Model) connect() tea.Cmd {
 	return func() tea.Msg {
-		// Validation
 		if err := m.cfg.Validate(); err != nil {
 			return connectResultMsg{err: err}
 		}
-		return connectResultMsg{err: nil}
+		sshClient, err := ssh.Connect(m.cfg.Host, m.cfg.User, m.cfg.KeyPath)
+		if err != nil {
+			return connectResultMsg{err: err}
+		}
+		t, err := transfer.New(sshClient.Conn(), m.cfg.Source,
+			m.cfg.DestPath, m.cfg.Concurrency)
+		if err != nil {
+			sshClient.Close()
+			return connectResultMsg{err: err}
+		}
+		if err := t.Walk(); err != nil {
+			sshClient.Close()
+			return connectResultMsg{err: err}
+		}
+		return connectResultMsg{transferer: t, sshClient: sshClient}
 	}
 }
 
 func (m Model) startTransfer() tea.Cmd {
 	return func() tea.Msg {
+		// Apply template if specified
+		if m.cfg.Template != "" {
+			tmpl, err := template.Get(m.cfg.Template)
+			if err != nil {
+				return transferDoneMsg{err: err}
+			}
+			sftpClient, err := sftp.NewClient(m.sshClient.Conn())
+			if err != nil {
+				return transferDoneMsg{err: err}
+			}
+			if err := tmpl.Apply(sftpClient, m.cfg.DestPath); err != nil {
+				sftpClient.Close()
+				return transferDoneMsg{err: err}
+			}
+			sftpClient.Close()
+		}
+
+		// Start transfer in background goroutine
+		go func() {
+			m.transferer.Run()
+		}()
+
 		return transferStartMsg{}
+	}
+}
+
+func (m Model) waitForProgress() tea.Cmd {
+	return func() tea.Msg {
+		msg, ok := <-m.transferer.Progress()
+		if !ok {
+			// Channel closed — transfer is done
+			return transferDoneMsg{}
+		}
+		return transferProgressMsg{msg: msg}
+	}
+}
+
+// cleanup closes SSH and SFTP connections
+func (m *Model) cleanup() {
+	if m.transferer != nil {
+		m.transferer.Close()
+	}
+	if m.sshClient != nil {
+		m.sshClient.Close()
 	}
 }
