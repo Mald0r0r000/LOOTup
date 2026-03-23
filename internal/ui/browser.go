@@ -45,22 +45,11 @@ func listDirs(root string) []string {
 type dirEntry struct {
 	Name string
 	Path string
-	IsUp bool // ".." entry
 }
 
 // listDirEntries returns subdirectories for the browser
 func listDirEntries(dir string) []dirEntry {
 	var entries []dirEntry
-
-	// Add parent directory entry
-	parent := filepath.Dir(dir)
-	if parent != dir {
-		entries = append(entries, dirEntry{
-			Name: "..",
-			Path: parent,
-			IsUp: true,
-		})
-	}
 
 	items, err := os.ReadDir(dir)
 	if err != nil {

@@ -2,6 +2,7 @@ package ui
 
 import (
 	"fmt"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -200,33 +201,37 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m Model) updateBrowser(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
-	case "ctrl+c", "q":
+	case "ctrl+c", "esc":
 		return m, tea.Quit
 
-	case "up", "k":
+	case "up":
 		if m.browserCursor > 0 {
 			m.browserCursor--
 		}
 
-	case "down", "j":
+	case "down":
 		if m.browserCursor < len(m.browserDirs)-1 {
 			m.browserCursor++
 		}
 
-	case "enter":
+	case "right", "enter":
 		if len(m.browserDirs) == 0 {
 			break
 		}
 		selected := m.browserDirs[m.browserCursor]
-		if selected.IsUp || true {
-			// Navigate into directory
-			m.browserPath = selected.Path
-			m.browserDirs = listDirEntries(selected.Path)
+		m.browserPath = selected.Path
+		m.browserDirs = listDirEntries(selected.Path)
+		m.browserCursor = 0
+
+	case "left":
+		parent := filepath.Dir(m.browserPath)
+		if parent != m.browserPath {
+			m.browserPath = parent
+			m.browserDirs = listDirEntries(parent)
 			m.browserCursor = 0
 		}
 
-	case "s", " ":
-		// Select current directory as source
+	case " ":
 		m.cfg.Source = m.browserPath
 		m.hostForm = newHostInputModel(
 			m.cfg.Host,
@@ -238,9 +243,6 @@ func (m Model) updateBrowser(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		)
 		m.state = StateHostInput
 		return m, m.hostForm.inputs[0].Focus()
-
-	case "esc":
-		return m, tea.Quit
 	}
 
 	return m, nil
@@ -383,13 +385,7 @@ func (m Model) viewBrowser() string {
 	for i := start; i < end; i++ {
 		entry := m.browserDirs[i]
 		cursor := "  "
-		icon := "📁"
 		name := entry.Name
-
-		if entry.IsUp {
-			icon = "⬆ "
-			name = ".."
-		}
 
 		if i == m.browserCursor {
 			cursor = successStyle.Render("▸ ")
@@ -398,11 +394,11 @@ func (m Model) viewBrowser() string {
 			name = valueStyle.Render(name)
 		}
 
-		b.WriteString(fmt.Sprintf("  %s%s %s\n", cursor, icon, name))
+		b.WriteString(fmt.Sprintf("  %s📁 %s\n", cursor, name))
 	}
 
 	b.WriteString("\n")
-	b.WriteString(dimStyle.Render("  ↑/↓: navigate  •  Enter: open  •  Space/s: select this dir  •  Esc: quit"))
+	b.WriteString(dimStyle.Render("  ↑/↓: navigate  •  →/Enter: open  •  ←: back  •  Space: select  •  Esc: quit"))
 
 	return b.String()
 }
