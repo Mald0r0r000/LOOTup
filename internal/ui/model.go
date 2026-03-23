@@ -2,6 +2,7 @@ package ui
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/spinner"
@@ -18,11 +19,11 @@ import (
 type State int
 
 const (
-	StateConfig State = iota
-	StateTemplate
+	StateSourceBrowser State = iota
+	StateHostInput
+	StateConfig
 	StateConnecting
 	StateTransfer
-	StatePostTransfer
 	StateDone
 	StateError
 )
@@ -59,6 +60,13 @@ type Model struct {
 	spinner spinner.Model
 	err     error
 
+	// Interactive setup
+	volumes       []string
+	browserPath   string
+	browserCursor int
+	browserDirs   []dirEntry
+	hostForm      hostInputModel
+
 	// Connections
 	sshClient *ssh.Client
 
@@ -85,11 +93,28 @@ func NewModel(cfg *config.Config) Model {
 	s.Spinner = spinner.Dot
 	s.Style = titleStyle
 
-	return Model{
+	m := Model{
 		cfg:     cfg,
-		state:   StateConfig,
 		spinner: s,
 	}
+
+	if cfg.IsInteractive() {
+		// Interactive mode — start with source browser
+		m.state = StateSourceBrowser
+		m.volumes = detectVolumes()
+		startDir := "/Volumes"
+		if len(m.volumes) > 0 {
+			startDir = "/Volumes"
+		}
+		m.browserPath = startDir
+		m.browserDirs = listDirEntries(startDir)
+		m.browserCursor = 0
+	} else {
+		// CLI mode — skip to config summary
+		m.state = StateConfig
+	}
+
+	return m
 }
 
 // Init implements tea.Model
@@ -102,12 +127,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 
 	case tea.KeyMsg:
-		switch msg.String() {
-		case "ctrl+c", "q":
-			m.cleanup()
-			return m, tea.Quit
-		case "enter":
-			return m.handleEnter()
+		switch m.state {
+		case StateSourceBrowser:
+			return m.updateBrowser(msg)
+		case StateHostInput:
+			return m.updateHostInput(msg)
+		default:
+			return m.updateDefault(msg)
 		}
 
 	case tea.WindowSizeMsg:
@@ -170,6 +196,104 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// --- Browser key handling ---
+
+func (m Model) updateBrowser(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "ctrl+c", "q":
+		return m, tea.Quit
+
+	case "up", "k":
+		if m.browserCursor > 0 {
+			m.browserCursor--
+		}
+
+	case "down", "j":
+		if m.browserCursor < len(m.browserDirs)-1 {
+			m.browserCursor++
+		}
+
+	case "enter":
+		if len(m.browserDirs) == 0 {
+			break
+		}
+		selected := m.browserDirs[m.browserCursor]
+		if selected.IsUp || true {
+			// Navigate into directory
+			m.browserPath = selected.Path
+			m.browserDirs = listDirEntries(selected.Path)
+			m.browserCursor = 0
+		}
+
+	case "s", " ":
+		// Select current directory as source
+		m.cfg.Source = m.browserPath
+		m.hostForm = newHostInputModel(
+			m.cfg.Host,
+			m.cfg.User,
+			m.cfg.KeyPath,
+			m.cfg.DestPath,
+			m.cfg.Template,
+			m.cfg.Concurrency,
+		)
+		m.state = StateHostInput
+		return m, m.hostForm.inputs[0].Focus()
+
+	case "esc":
+		return m, tea.Quit
+	}
+
+	return m, nil
+}
+
+// --- Host input key handling ---
+
+func (m Model) updateHostInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "ctrl+c":
+		return m, tea.Quit
+
+	case "esc":
+		// Go back to source browser
+		m.state = StateSourceBrowser
+		m.browserDirs = listDirEntries(m.browserPath)
+		return m, nil
+
+	case "enter":
+		// Confirm form
+		host, user, keyPath, destPath, tmpl, workersStr := m.hostForm.Values()
+		m.cfg.Host = host
+		m.cfg.User = user
+		if keyPath != "" {
+			m.cfg.KeyPath = keyPath
+		}
+		m.cfg.DestPath = destPath
+		m.cfg.Template = tmpl
+		if w, err := strconv.Atoi(workersStr); err == nil && w > 0 {
+			m.cfg.Concurrency = w
+		}
+		m.state = StateConfig
+		return m, nil
+
+	default:
+		cmd := m.hostForm.Update(msg)
+		return m, cmd
+	}
+}
+
+// --- Default key handling (Config, Done, Error) ---
+
+func (m Model) updateDefault(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "ctrl+c", "q":
+		m.cleanup()
+		return m, tea.Quit
+	case "enter":
+		return m.handleEnter()
+	}
+	return m, nil
+}
+
 // View implements tea.Model
 func (m Model) View() string {
 	var b strings.Builder
@@ -181,6 +305,14 @@ func (m Model) View() string {
 	b.WriteString("\n\n")
 
 	switch m.state {
+
+	case StateSourceBrowser:
+		b.WriteString(m.viewBrowser())
+
+	case StateHostInput:
+		b.WriteString(titleStyle.Render("  Remote Configuration"))
+		b.WriteString("\n\n")
+		b.WriteString(m.hostForm.View())
 
 	case StateConfig:
 		b.WriteString(m.viewConfig())
@@ -197,11 +329,10 @@ func (m Model) View() string {
 
 	case StateError:
 		b.WriteString(errorStyle.Render(fmt.Sprintf("  ✗ Error: %v", m.err)))
-		b.WriteString("\n")
+		b.WriteString("\n\n")
+		b.WriteString(dimStyle.Render("  Press q to quit, or Esc to go back"))
 	}
 
-	b.WriteString("\n")
-	b.WriteString(statusStyle.Render("Press q to quit"))
 	b.WriteString("\n")
 
 	return b.String()
@@ -209,18 +340,90 @@ func (m Model) View() string {
 
 // --- View helpers ---
 
+func (m Model) viewBrowser() string {
+	var b strings.Builder
+
+	b.WriteString(titleStyle.Render("  Select Source Directory"))
+	b.WriteString("\n\n")
+
+	// Volume shortcuts
+	if len(m.volumes) > 0 {
+		b.WriteString(dimStyle.Render("  Volumes:"))
+		b.WriteString("\n")
+		for _, v := range m.volumes {
+			b.WriteString(dimStyle.Render(fmt.Sprintf("    💾 %s", v)))
+			b.WriteString("\n")
+		}
+		b.WriteString("\n")
+	}
+
+	// Current path
+	b.WriteString(labelStyle.Render("  📂 " + m.browserPath))
+	b.WriteString("\n\n")
+
+	// Directory listing
+	maxVisible := 15
+	if m.height > 0 {
+		maxVisible = m.height - 14
+		if maxVisible < 5 {
+			maxVisible = 5
+		}
+	}
+
+	start := 0
+	if m.browserCursor >= maxVisible {
+		start = m.browserCursor - maxVisible + 1
+	}
+
+	end := start + maxVisible
+	if end > len(m.browserDirs) {
+		end = len(m.browserDirs)
+	}
+
+	for i := start; i < end; i++ {
+		entry := m.browserDirs[i]
+		cursor := "  "
+		icon := "📁"
+		name := entry.Name
+
+		if entry.IsUp {
+			icon = "⬆ "
+			name = ".."
+		}
+
+		if i == m.browserCursor {
+			cursor = successStyle.Render("▸ ")
+			name = successStyle.Render(name)
+		} else {
+			name = valueStyle.Render(name)
+		}
+
+		b.WriteString(fmt.Sprintf("  %s%s %s\n", cursor, icon, name))
+	}
+
+	b.WriteString("\n")
+	b.WriteString(dimStyle.Render("  ↑/↓: navigate  •  Enter: open  •  Space/s: select this dir  •  Esc: quit"))
+
+	return b.String()
+}
+
 func (m Model) viewConfig() string {
 	var b strings.Builder
+
+	b.WriteString(titleStyle.Render("  Transfer Summary"))
+	b.WriteString("\n\n")
+
 	b.WriteString(boxStyle.Render(
 		labelStyle.Render("Source:") + valueStyle.Render(m.cfg.Source) + "\n" +
 			labelStyle.Render("Host:") + valueStyle.Render(m.cfg.Host) + "\n" +
 			labelStyle.Render("User:") + valueStyle.Render(m.cfg.User) + "\n" +
+			labelStyle.Render("Key:") + valueStyle.Render(m.cfg.KeyPath) + "\n" +
 			labelStyle.Render("Dest Path:") + valueStyle.Render(m.cfg.DestPath) + "\n" +
 			labelStyle.Render("Template:") + valueStyle.Render(m.cfg.Template) + "\n" +
 			labelStyle.Render("Workers:") + valueStyle.Render(fmt.Sprintf("%d", m.cfg.Concurrency)),
 	))
 	b.WriteString("\n")
-	b.WriteString(dimStyle.Render("  Press Enter to start transfer..."))
+	b.WriteString(dimStyle.Render("  Press Enter to start transfer...  •  q to quit"))
 	return b.String()
 }
 
@@ -337,7 +540,6 @@ func (m Model) waitForProgress() tea.Cmd {
 	return func() tea.Msg {
 		msg, ok := <-m.transferer.Progress()
 		if !ok {
-			// Channel closed — transfer is done
 			return transferDoneMsg{}
 		}
 		return transferProgressMsg{msg: msg}
