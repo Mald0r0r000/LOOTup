@@ -3,9 +3,11 @@ package ssh
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"golang.org/x/crypto/ssh"
+	"golang.org/x/crypto/ssh/knownhosts"
 )
 
 // Client wraps an SSH connection to a remote host
@@ -27,12 +29,26 @@ func Connect(host, user, keyPath string) (*Client, error) {
 		return nil, fmt.Errorf("parse key %s: %w", keyPath, err)
 	}
 
+	// Load known_hosts for host key verification
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil, fmt.Errorf("get home dir: %w", err)
+	}
+	knownHostsPath := filepath.Join(home, ".ssh", "known_hosts")
+	if _, err := os.Stat(knownHostsPath); os.IsNotExist(err) {
+		return nil, fmt.Errorf("known_hosts not found — connect manually first: ssh %s@%s", user, host)
+	}
+	hostKeyCallback, err := knownhosts.New(knownHostsPath)
+	if err != nil {
+		return nil, fmt.Errorf("load known_hosts: %w", err)
+	}
+
 	config := &ssh.ClientConfig{
 		User: user,
 		Auth: []ssh.AuthMethod{
 			ssh.PublicKeys(signer),
 		},
-		HostKeyCallback: ssh.InsecureIgnoreHostKey(), // TODO: implement known_hosts check
+		HostKeyCallback: hostKeyCallback,
 	}
 
 	addr := host

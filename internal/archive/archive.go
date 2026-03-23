@@ -2,6 +2,7 @@ package archive
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
 )
 
@@ -18,8 +19,8 @@ func Run(source, dest string, dryRun bool) error {
 	}
 
 	cmd := exec.Command("rclone", args...)
-	cmd.Stdout = nil // TODO: capture for TUI progress
-	cmd.Stderr = nil
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
 
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("rclone sync failed: %w", err)
