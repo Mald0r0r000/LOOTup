@@ -1,6 +1,10 @@
 package ui
 
-import "github.com/charmbracelet/lipgloss"
+import (
+	"strings"
+
+	"github.com/charmbracelet/lipgloss"
+)
 
 var (
 	// Colors
@@ -67,3 +71,38 @@ var (
 			Foreground(colorDim).
 			PaddingLeft(1)
 )
+
+// renderLogo returns the ASCII art banner for LOOTup
+func renderLogo() string {
+	lootAscii := `██╗      ██████╗  ██████╗ ████████╗
+██║     ██╔═══██╗██╔═══██╗╚══██╔══╝
+██║     ██║   ██║██║   ██║   ██║   
+██║     ██║   ██║██║   ██║   ██║   
+███████╗╚██████╔╝╚██████╔╝   ██║   
+╚══════╝ ╚═════╝  ╚═════╝    ╚═╝`
+
+	upLines := []string{
+		"      ╦ ╦╔═╗  ",
+		"    ║ ║╠═╝  ",
+		"  ╚═╝╩    ",
+	}
+
+	orange := lipgloss.NewStyle().Foreground(lipgloss.Color("#FF6F00"))
+	neon := lipgloss.NewStyle().Foreground(lipgloss.Color("#FF2D9B"))
+
+	line1 := neon.Copy().Faint(true).Render(upLines[0])
+	line2 := neon.Copy().Render(upLines[1])
+	line3 := neon.Copy().Bold(true).Render(upLines[2])
+
+	upFinal := strings.Join([]string{line1, line2, line3}, "\n")
+
+	lootRender := orange.Render(lootAscii)
+
+	upRender := lipgloss.NewStyle().
+		MarginTop(3).
+		MarginLeft(-1).
+		UnsetForeground().
+		Render(upFinal)
+
+	return lipgloss.JoinHorizontal(lipgloss.Bottom, lootRender, upRender)
+}

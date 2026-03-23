@@ -300,8 +300,8 @@ func (m Model) View() string {
 
 	// Banner
 	b.WriteString("\n")
-	b.WriteString(headerStyle.Render(" 🚀 LOOTup "))
-	b.WriteString(dimStyle.Render(fmt.Sprintf(" v%s", m.cfg.Version)))
+	b.WriteString(renderLogo())
+	b.WriteString(dimStyle.Render(fmt.Sprintf("  v%s", m.cfg.Version)))
 	b.WriteString("\n\n")
 
 	switch m.state {
