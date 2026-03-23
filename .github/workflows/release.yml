@@ -1,0 +1,41 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: 'stable'
+
+      - name: Build macOS (Intel)
+        run: GOOS=darwin GOARCH=amd64 go build -ldflags="-s -w -X main.version=${GITHUB_REF#refs/tags/}" -o bin/lootup-darwin-amd64 ./cmd/lootup
+
+      - name: Build macOS (M1/M2)
+        run: GOOS=darwin GOARCH=arm64 go build -ldflags="-s -w -X main.version=${GITHUB_REF#refs/tags/}" -o bin/lootup-darwin-arm64 ./cmd/lootup
+
+      - name: Build Linux (AMD64)
+        run: GOOS=linux GOARCH=amd64 go build -ldflags="-s -w -X main.version=${GITHUB_REF#refs/tags/}" -o bin/lootup-linux-amd64 ./cmd/lootup
+
+      - name: Release
+        uses: softprops/action-gh-release@v1
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          files: |
+            bin/lootup-darwin-amd64
+            bin/lootup-darwin-arm64
+            bin/lootup-linux-amd64
+          draft: false
+          prerelease: false
