@@ -3,6 +3,7 @@ package template
 import (
 	"fmt"
 	"path/filepath"
+	"strings"
 
 	"github.com/pkg/sftp"
 )
@@ -10,7 +11,7 @@ import (
 // Template defines a project folder structure
 type Template struct {
 	Name string
-	Dirs []string
+	Dirs []string // Use {ProjectName} and {SessionName} as placeholders
 }
 
 // builtinTemplates holds the predefined project structures
@@ -18,28 +19,34 @@ var builtinTemplates = map[string]*Template{
 	"film": {
 		Name: "film",
 		Dirs: []string{
-			"FILM/Rushes",
-			"FILM/Audio",
-			"EDIT/Output",
-			"EDIT/Exports",
-			"DOCS",
+			// Project root (created once per project)
+			"{ProjectName}/EDIT/LUTS",
+			"{ProjectName}/EDIT/DRP",
+			"{ProjectName}/EDIT/OUTPUTS/V01/RATIO",
+			"{ProjectName}/DOCS",
+			// Session dirs (created once per shooting day)
+			"{ProjectName}/FILM-DATAS/{SessionName}/RUSHES",
+			"{ProjectName}/FILM-DATAS/{SessionName}/SOUND",
+			"{ProjectName}/FILM-DATAS/{SessionName}/ASSETS",
+			"{ProjectName}/PROXIES/{SessionName}_OFF/RUSHES",
+			"{ProjectName}/PROXIES/{SessionName}_OFF/DRP",
 		},
 	},
 	"photo": {
 		Name: "photo",
 		Dirs: []string{
-			"RAW",
-			"EDIT",
-			"EXPORT",
-			"DOCS",
+			"{ProjectName}/RAW/{SessionName}",
+			"{ProjectName}/EDIT",
+			"{ProjectName}/EXPORT",
+			"{ProjectName}/DOCS",
 		},
 	},
 	"generic": {
 		Name: "generic",
 		Dirs: []string{
-			"SOURCE",
-			"OUTPUT",
-			"DOCS",
+			"{ProjectName}/SOURCE/{SessionName}",
+			"{ProjectName}/OUTPUT",
+			"{ProjectName}/DOCS",
 		},
 	},
 }
@@ -74,10 +81,18 @@ func List() []*Template {
 	return result
 }
 
-// Apply creates the folder structure on the remote host via SFTP
-func (t *Template) Apply(client *sftp.Client, basePath string) error {
+// Apply creates the folder structure on the remote host via SFTP.
+// basePath is the root destination (e.g. /data/projects).
+// projectName and sessionName are substituted into directory paths.
+func (t *Template) Apply(client *sftp.Client, basePath, projectName, sessionName string) error {
+	replacer := strings.NewReplacer(
+		"{ProjectName}", projectName,
+		"{SessionName}", sessionName,
+	)
+
 	for _, dir := range t.Dirs {
-		fullPath := filepath.Join(basePath, dir)
+		resolved := replacer.Replace(dir)
+		fullPath := filepath.Join(basePath, resolved)
 		if err := client.MkdirAll(fullPath); err != nil {
 			return fmt.Errorf("create remote dir %s: %w", fullPath, err)
 		}

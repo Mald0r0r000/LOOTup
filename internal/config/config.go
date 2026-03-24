@@ -20,6 +20,11 @@ type Config struct {
 	// Remote destination
 	DestPath string
 
+	// Project & Session (interactive only)
+	ProjectName string
+	SessionName string
+	SessionMode string // "new" | "merge" | "resume"
+
 	// Template
 	Template string
 
