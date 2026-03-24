@@ -122,7 +122,7 @@ func (h *hostInputModel) View() string {
 
 	b.WriteString(boxStyle.Render(h.renderFields()))
 	b.WriteString("\n")
-	b.WriteString(dimStyle.Render("  Tab/Shift-Tab: navigate  •  Enter: confirm  •  Esc: back"))
+	b.WriteString(dimStyle.Render("  ↑/↓: navigate fields  •  Enter: confirm  •  Esc: back"))
 
 	return b.String()
 }
