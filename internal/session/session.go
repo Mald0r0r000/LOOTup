@@ -10,14 +10,22 @@ import (
 	"github.com/pkg/sftp"
 )
 
+// HashEntry records a per-file hash (duplicated from transfer to avoid import cycle)
+type HashEntry struct {
+	RelPath string `json:"rel_path"`
+	Hash    string `json:"hash_xxh64"`
+	Size    int64  `json:"size"`
+}
+
 // SessionEntry represents one shooting day / transfer session
 type SessionEntry struct {
-	Name         string `json:"name"`
-	Date         string `json:"date"`
-	Status       string `json:"status"` // "in_progress" | "complete"
-	Files        int    `json:"files"`
-	Bytes        int64  `json:"bytes"`
-	HashVerified bool   `json:"hash_verified"`
+	Name         string      `json:"name"`
+	Date         string      `json:"date"`
+	Status       string      `json:"status"` // "in_progress" | "complete"
+	Files        int         `json:"files"`
+	Bytes        int64       `json:"bytes"`
+	HashVerified bool        `json:"hash_verified"`
+	Hashes       []HashEntry `json:"hashes,omitempty"`
 }
 
 // ProjectState holds the full project state, persisted as JSON on the remote

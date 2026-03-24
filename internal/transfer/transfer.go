@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/cespare/xxhash/v2"
 	"github.com/pkg/sftp"
@@ -16,18 +17,9 @@ import (
 
 // FileInfo holds metadata about a file to transfer
 type FileInfo struct {
-	LocalPath  string
-	RelPath    string
-	Size       int64
-}
-
-// Result holds the outcome of a single file transfer
-type Result struct {
-	File      FileInfo
-	Hash      uint64
-	BytesSent int64
-	Err       error
-	Verified  bool
+	LocalPath string
+	RelPath   string
+	Size      int64
 }
 
 // ProgressMsg is sent to report transfer progress
@@ -36,8 +28,16 @@ type ProgressMsg struct {
 	BytesSent  int64
 	TotalBytes int64
 	Done       bool
+	Skipped    bool
 	Err        error
 	Hash       uint64
+}
+
+// HashEntry records a per-file hash for verification log
+type HashEntry struct {
+	RelPath string `json:"rel_path"`
+	Hash    string `json:"hash_xxh64"`
+	Size    int64  `json:"size"`
 }
 
 // Transferer manages SFTP file transfers with parallel workers
@@ -47,9 +47,17 @@ type Transferer struct {
 	source      string
 	destPath    string
 	concurrency int
+	resumeMode  bool
 	files       []FileInfo
 	totalBytes  int64
 	progressCh  chan ProgressMsg
+	startTime   time.Time
+
+	// Hash log — populated during transfer
+	mu         sync.Mutex
+	HashLog    []HashEntry
+	SkippedN   int64
+	SkippedB   int64
 }
 
 // New creates a new Transferer
@@ -69,6 +77,11 @@ func New(sshConn *ssh.Client, source, destPath string, concurrency int) (*Transf
 	}, nil
 }
 
+// SetResumeMode enables skip-existing for resume transfers
+func (t *Transferer) SetResumeMode(resume bool) {
+	t.resumeMode = resume
+}
+
 // Walk scans the source directory and builds the file list
 func (t *Transferer) Walk() error {
 	t.files = nil
@@ -79,7 +92,6 @@ func (t *Transferer) Walk() error {
 			return err
 		}
 
-		// Skip directories and system files
 		if info.IsDir() {
 			base := filepath.Base(path)
 			if strings.HasPrefix(base, ".") && path != t.source {
@@ -88,7 +100,6 @@ func (t *Transferer) Walk() error {
 			return nil
 		}
 
-		// Skip hidden/system files
 		base := filepath.Base(path)
 		if strings.HasPrefix(base, ".") {
 			return nil
@@ -125,9 +136,15 @@ func (t *Transferer) Progress() <-chan ProgressMsg {
 	return t.progressCh
 }
 
+// StartTime returns when transfer began
+func (t *Transferer) StartTime() time.Time {
+	return t.startTime
+}
+
 // Run starts the parallel transfer. It blocks until all files are transferred.
 func (t *Transferer) Run() error {
 	defer close(t.progressCh)
+	t.startTime = time.Now()
 
 	fileCh := make(chan FileInfo, len(t.files))
 	for _, f := range t.files {
@@ -163,8 +180,32 @@ func (t *Transferer) Run() error {
 	return nil
 }
 
-// transferFile copies a single file via SFTP with on-the-fly xxHash64 via io.TeeReader
+// transferFile copies a single file via SFTP with on-the-fly xxHash64
 func (t *Transferer) transferFile(fi FileInfo) error {
+	remotePath := filepath.Join(t.destPath, fi.RelPath)
+
+	// Resume mode: skip if remote file exists with same size
+	if t.resumeMode {
+		if remoteStat, err := t.sftpClient.Stat(remotePath); err == nil {
+			if remoteStat.Size() == fi.Size {
+				// File already transferred — skip
+				t.mu.Lock()
+				t.SkippedN++
+				t.SkippedB += fi.Size
+				t.mu.Unlock()
+
+				t.progressCh <- ProgressMsg{
+					File:       fi,
+					BytesSent:  fi.Size,
+					TotalBytes: fi.Size,
+					Done:       true,
+					Skipped:    true,
+				}
+				return nil
+			}
+		}
+	}
+
 	// Open local file
 	srcFile, err := os.Open(fi.LocalPath)
 	if err != nil {
@@ -173,7 +214,6 @@ func (t *Transferer) transferFile(fi FileInfo) error {
 	defer srcFile.Close()
 
 	// Ensure remote directory exists
-	remotePath := filepath.Join(t.destPath, fi.RelPath)
 	remoteDir := filepath.Dir(remotePath)
 	if err := t.sftpClient.MkdirAll(remoteDir); err != nil {
 		return fmt.Errorf("mkdir %s: %w", remoteDir, err)
@@ -204,6 +244,16 @@ func (t *Transferer) transferFile(fi FileInfo) error {
 	}
 
 	localHash := hasher.Sum64()
+	hashStr := fmt.Sprintf("%016x", localHash)
+
+	// Record hash in log
+	t.mu.Lock()
+	t.HashLog = append(t.HashLog, HashEntry{
+		RelPath: fi.RelPath,
+		Hash:    hashStr,
+		Size:    written,
+	})
+	t.mu.Unlock()
 
 	// Report completion
 	t.progressCh <- ProgressMsg{
@@ -219,9 +269,9 @@ func (t *Transferer) transferFile(fi FileInfo) error {
 
 // DryRunResult holds dry run summary
 type DryRunResult struct {
-	Source     string
-	DestPath  string
-	Files     []FileInfo
+	Source    string
+	DestPath string
+	Files    []FileInfo
 	TotalSize int64
 }
 
@@ -239,7 +289,6 @@ func (t *Transferer) DryRun() (*DryRunResult, error) {
 }
 
 // VerifyRemote tries to verify a file's hash on the remote host via SSH.
-// If xxhsum is not available, returns false without error (trusts local hash).
 func (t *Transferer) VerifyRemote(remotePath string, expectedHash uint64) (bool, error) {
 	session, err := t.sshClient.NewSession()
 	if err != nil {
@@ -247,19 +296,17 @@ func (t *Transferer) VerifyRemote(remotePath string, expectedHash uint64) (bool,
 	}
 	defer session.Close()
 
-	// Try xxhsum — if not found, skip verification
 	cmd := fmt.Sprintf("xxhsum %s 2>/dev/null || echo SKIP", remotePath)
 	output, err := session.CombinedOutput(cmd)
 	if err != nil {
-		return false, nil // Skip verification
+		return false, nil
 	}
 
 	result := strings.TrimSpace(string(output))
 	if result == "SKIP" || result == "" {
-		return false, nil // xxhsum not available, skip
+		return false, nil
 	}
 
-	// Parse xxhsum output: "HASH  filename"
 	parts := strings.Fields(result)
 	if len(parts) < 1 {
 		return false, nil
@@ -290,6 +337,26 @@ func FormatBytes(b int64) string {
 		exp++
 	}
 	return fmt.Sprintf("%.1f %cB", float64(b)/float64(div), "KMGTPE"[exp])
+}
+
+// FormatSpeed returns human-readable speed (e.g. "125.3 MB/s")
+func FormatSpeed(bytesPerSec float64) string {
+	return FormatBytes(int64(bytesPerSec)) + "/s"
+}
+
+// FormatDuration returns a compact duration (e.g. "2m 30s")
+func FormatDuration(d time.Duration) string {
+	d = d.Round(time.Second)
+	h := int(d.Hours())
+	m := int(d.Minutes()) % 60
+	s := int(d.Seconds()) % 60
+	if h > 0 {
+		return fmt.Sprintf("%dh %02dm", h, m)
+	}
+	if m > 0 {
+		return fmt.Sprintf("%dm %02ds", m, s)
+	}
+	return fmt.Sprintf("%ds", s)
 }
 
 // progressReader wraps a reader and reports progress

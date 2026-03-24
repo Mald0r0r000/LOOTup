@@ -1,8 +1,6 @@
 package ui
 
 import (
-	"strings"
-
 	"github.com/charmbracelet/lipgloss"
 )
 
@@ -81,28 +79,18 @@ func renderLogo() string {
 ███████╗╚██████╔╝╚██████╔╝   ██║   
 ╚══════╝ ╚═════╝  ╚═════╝    ╚═╝`
 
-	upLines := []string{
-		"      ╦ ╦╔═╗  ",
-		"    ║ ║╠═╝  ",
-		"  ╚═╝╩    ",
-	}
+	upAscii := ` _   _ ______ 
+| | | || ___ \
+| | | || |_/ /
+| | | ||  __/ 
+| |_| || |    
+ \___/ \_|    `
 
 	orange := lipgloss.NewStyle().Foreground(lipgloss.Color("#FF6F00"))
-	neon := lipgloss.NewStyle().Foreground(lipgloss.Color("#FF2D9B"))
-
-	line1 := neon.Copy().Faint(true).Render(upLines[0])
-	line2 := neon.Copy().Render(upLines[1])
-	line3 := neon.Copy().Bold(true).Render(upLines[2])
-
-	upFinal := strings.Join([]string{line1, line2, line3}, "\n")
+	neon := lipgloss.NewStyle().Foreground(lipgloss.Color("#FF2D9B")).Bold(true)
 
 	lootRender := orange.Render(lootAscii)
-
-	upRender := lipgloss.NewStyle().
-		MarginTop(3).
-		MarginLeft(-1).
-		UnsetForeground().
-		Render(upFinal)
+	upRender := neon.Copy().MarginLeft(1).Render(upAscii)
 
 	return lipgloss.JoinHorizontal(lipgloss.Bottom, lootRender, upRender)
 }

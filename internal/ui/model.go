@@ -584,6 +584,11 @@ func (m Model) updateDefault(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "ctrl+c", "q":
 		m.cleanup()
 		return m, tea.Quit
+	case "esc":
+		if m.state == StateConfig {
+			m.state = StateSessionName
+			return m, nil
+		}
 	case "enter":
 		return m.handleEnter()
 	}
@@ -831,7 +836,7 @@ func (m Model) viewConfig() string {
 			labelStyle.Render("Workers:") + valueStyle.Render(fmt.Sprintf("%d", m.cfg.Concurrency)),
 	))
 	b.WriteString("\n")
-	b.WriteString(dimStyle.Render("  Press Enter to start transfer...  •  q to quit"))
+	b.WriteString(dimStyle.Render("  Press Enter to start transfer...  •  Esc: back  •  q to quit"))
 	return b.String()
 }
 
@@ -854,10 +859,24 @@ func (m Model) viewTransfer() string {
 		progressEmptyStyle.Render(strings.Repeat("░", empty))
 
 	b.WriteString(fmt.Sprintf("  [%s] %.1f%%\n", bar, pct*100))
-	b.WriteString(fmt.Sprintf("  %s / %s — %d/%d files\n",
+
+	speedStr := ""
+	etaStr := ""
+	if m.bytesSent > 0 && m.transferer != nil {
+		elapsed := time.Since(m.transferer.StartTime())
+		if elapsed.Seconds() > 0 {
+			speed := float64(m.bytesSent) / elapsed.Seconds()
+			speedStr = transfer.FormatSpeed(speed)
+			rem := m.totalBytes - m.bytesSent
+			eta := time.Duration(float64(rem) / speed * float64(time.Second))
+			etaStr = "  •  ETA: " + transfer.FormatDuration(eta)
+		}
+	}
+
+	b.WriteString(fmt.Sprintf("  %s / %s — %d/%d files  •  %s%s\n",
 		transfer.FormatBytes(m.bytesSent),
 		transfer.FormatBytes(m.totalBytes),
-		m.filesDone, m.fileCount))
+		m.filesDone, m.fileCount, speedStr, etaStr))
 
 	return b.String()
 }
@@ -1053,6 +1072,17 @@ func (m *Model) writeSessionState(status string, files int, bytes int64) {
 		state = session.NewProjectState(m.cfg.ProjectName)
 	}
 
+	var hashes []session.HashEntry
+	if m.transferer != nil {
+		for _, h := range m.transferer.HashLog {
+			hashes = append(hashes, session.HashEntry{
+				RelPath: h.RelPath,
+				Hash:    h.Hash,
+				Size:    h.Size,
+			})
+		}
+	}
+
 	state.AddSession(session.SessionEntry{
 		Name:         m.cfg.SessionName,
 		Date:         time.Now().Format("2006-01-02"),
@@ -1060,6 +1090,7 @@ func (m *Model) writeSessionState(status string, files int, bytes int64) {
 		Files:        files,
 		Bytes:        bytes,
 		HashVerified: status == "complete",
+		Hashes:       hashes,
 	})
 
 	session.Save(sftpClient, remotePath, state)
