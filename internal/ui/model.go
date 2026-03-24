@@ -39,9 +39,10 @@ const (
 
 // Session mode options
 const (
-	ModeNew    = "new"
-	ModeMerge  = "merge"
-	ModeResume = "resume"
+	ModeNew      = "new"
+	ModeMerge    = "merge"
+	ModeResume   = "resume"
+	ModeSettings = "settings"
 )
 
 var sessionModeLabels = []struct {
@@ -52,6 +53,7 @@ var sessionModeLabels = []struct {
 	{ModeNew, "New session", "New project or new day on existing project"},
 	{ModeMerge, "Add to session", "Merge — add files to existing session"},
 	{ModeResume, "Resume transfer", "Continue interrupted transfer"},
+	{ModeSettings, "Settings", "Configure default remote host and path"},
 }
 
 // --- Tea Messages ---
@@ -95,6 +97,8 @@ type Model struct {
 	state   State
 	spinner spinner.Model
 	err     error
+
+	isSettingsMenu bool
 
 	// Session mode
 	sessionModeCursor int
@@ -300,6 +304,14 @@ func (m Model) updateSessionMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case "enter":
 		selected := sessionModeLabels[m.sessionModeCursor]
+		if selected.mode == ModeSettings {
+			m.isSettingsMenu = true
+			pHost, pUser, pKey, pDest, pTmpl, pConc := config.LoadPersisted()
+			m.hostForm = newHostInputModel(pHost, pUser, pKey, pDest, pTmpl, pConc)
+			m.state = StateHostInput
+			return m, m.hostForm.inputs[0].Focus()
+		}
+
 		m.cfg.SessionMode = selected.mode
 		// All modes: go to source browser next
 		m.initSourceBrowser()
@@ -392,6 +404,11 @@ func (m Model) updateHostInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 
 	case "esc":
+		if m.isSettingsMenu {
+			m.isSettingsMenu = false
+			m.state = StateSessionMode
+			return m, nil
+		}
 		m.state = StateSourceBrowser
 		return m, nil
 
@@ -406,6 +423,13 @@ func (m Model) updateHostInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.cfg.Template = tmpl
 		if w, err := strconv.Atoi(workersStr); err == nil && w > 0 {
 			m.cfg.Concurrency = w
+		}
+
+		if m.isSettingsMenu {
+			config.SavePersisted(m.cfg)
+			m.isSettingsMenu = false
+			m.state = StateSessionMode
+			return m, nil
 		}
 
 		switch m.cfg.SessionMode {
@@ -1072,25 +1096,73 @@ func (m *Model) writeSessionState(status string, files int, bytes int64) {
 		state = session.NewProjectState(m.cfg.ProjectName)
 	}
 
-	var hashes []session.HashEntry
+	var existing *session.SessionEntry
+	for i, s := range state.Sessions {
+		if s.Name == m.cfg.SessionName {
+			existing = &state.Sessions[i]
+			break
+		}
+	}
+
+	var dsHashes []session.HashEntry
+	var dsFiles = files
+	var dsBytes = bytes
+
+	if existing != nil {
+		dsFiles = existing.Files
+		dsBytes = existing.Bytes
+		dsHashes = existing.Hashes
+	}
+
+	hashStore := make(map[string]session.HashEntry)
+	for _, h := range dsHashes {
+		hashStore[h.RelPath] = h
+	}
+
 	if m.transferer != nil {
 		for _, h := range m.transferer.HashLog {
-			hashes = append(hashes, session.HashEntry{
+			hashStore[h.RelPath] = session.HashEntry{
 				RelPath: h.RelPath,
 				Hash:    h.Hash,
 				Size:    h.Size,
-			})
+			}
 		}
+	}
+
+	finalHashes := make([]session.HashEntry, 0, len(hashStore))
+	for _, h := range hashStore {
+		finalHashes = append(finalHashes, h)
+	}
+
+	if len(finalHashes) > 0 {
+		dsFiles = len(finalHashes)
+		dsBytes = 0
+		for _, h := range finalHashes {
+			dsBytes += h.Size
+		}
+	} else if status == "complete" {
+		if existing != nil && m.cfg.SessionMode == ModeMerge {
+			dsFiles = existing.Files + files
+			dsBytes = existing.Bytes + bytes
+		} else {
+			dsFiles = files
+			dsBytes = bytes
+		}
+	}
+
+	date := time.Now().Format("2006-01-02")
+	if existing != nil && existing.Date != "" {
+		date = existing.Date // preserve original date
 	}
 
 	state.AddSession(session.SessionEntry{
 		Name:         m.cfg.SessionName,
-		Date:         time.Now().Format("2006-01-02"),
+		Date:         date,
 		Status:       status,
-		Files:        files,
-		Bytes:        bytes,
+		Files:        dsFiles,
+		Bytes:        dsBytes,
 		HashVerified: status == "complete",
-		Hashes:       hashes,
+		Hashes:       finalHashes,
 	})
 
 	session.Save(sftpClient, remotePath, state)
