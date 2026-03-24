@@ -79,12 +79,12 @@ func renderLogo() string {
 ███████╗╚██████╔╝╚██████╔╝   ██║   
 ╚══════╝ ╚═════╝  ╚═════╝    ╚═╝`
 
-	upAscii := ` _   _ ______ 
-| | | || ___ \
-| | | || |_/ /
-| | | ||  __/ 
-| |_| || |    
- \___/ \_|    `
+	upAscii := `            
+            
+██╗ ██╗████╗
+██║ ██║██╔═╝
+╚████╔╝██║  
+ ╚═══╝ ╚═╝  `
 
 	orange := lipgloss.NewStyle().Foreground(lipgloss.Color("#FF6F00"))
 	neon := lipgloss.NewStyle().Foreground(lipgloss.Color("#FF2D9B")).Bold(true)
